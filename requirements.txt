@@ -1,0 +1,2 @@
+textual>=0.60
+pygments>=2.17

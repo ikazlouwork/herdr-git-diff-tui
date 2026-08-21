@@ -1,0 +1,16 @@
+[plugin]
+name = "herdr-git-diff-tui"
+version = "0.1.0"
+description = "Side-by-side git diff viewer with staging/unstaging, lazygit-style."
+
+[build]
+# Creates/updates the isolated venv in <plugin_dir>/.venv on install/update.
+hook = "bin/bootstrap.py --build"
+
+[[panes]]
+placement = "split"
+command = ["python3", "bin/bootstrap.py"]
+
+[[keybindings]]
+key = "prefix+d"
+action = "open-pane"

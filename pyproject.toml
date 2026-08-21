@@ -1,0 +1,24 @@
+[project]
+name = "herdr-git-diff-tui"
+version = "0.1.0"
+description = "A herdr plugin: a lazygit-style git diff/staging TUI panel, built with Textual."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "textual>=0.60",
+    "pygments>=2.17",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "textual-dev>=1.5",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
