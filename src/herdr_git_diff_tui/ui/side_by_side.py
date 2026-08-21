@@ -65,13 +65,20 @@ def _hunk_block(hunk: Hunk, side: str, path: str) -> Syntax:
     return syntax
 
 
-def render_side(file_diff: FileDiff, side: str, current_hunk_index: int) -> Group:
+def render_side(file_diff: FileDiff, side: str, current_hunk_index: int, source: str) -> Group:
+    # A checkbox per hunk, mirroring VS Code: checked means "this hunk is in
+    # the index". Viewing the staged diff -> every hunk here is staged, so it
+    # starts checked; toggling it unstages just that hunk. Viewing the
+    # unstaged diff -> starts unchecked; toggling stages it.
+    checkbox = "☑" if source == "staged" else "☐"
     renderables = []
     for i, hunk in enumerate(file_diff.hunks):
         if i > 0:
             renderables.append(Text("⋯", style="dim"))
         marker_style = "reverse bold" if i == current_hunk_index else "dim"
-        renderables.append(Text(hunk.header, style=marker_style))
+        header = Text(f"{checkbox} ", style="bold")
+        header.append(hunk.header, style=marker_style)
+        renderables.append(header)
         renderables.append(_hunk_block(hunk, side, file_diff.path))
     if not renderables:
         renderables.append(Text("(no changes)", style="dim"))
@@ -96,11 +103,13 @@ class DiffPane(VerticalScroll):
     def compose(self):
         yield self._static
 
-    def update_content(self, file_diff: FileDiff | None, current_hunk_index: int) -> None:
+    def update_content(
+        self, file_diff: FileDiff | None, current_hunk_index: int, source: str
+    ) -> None:
         if file_diff is None:
             self._static.update(Text("Select a file", style="dim"))
             return
-        self._static.update(render_side(file_diff, self.side, current_hunk_index))
+        self._static.update(render_side(file_diff, self.side, current_hunk_index, source))
 
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
         super().watch_scroll_y(old_value, new_value)
@@ -109,7 +118,11 @@ class DiffPane(VerticalScroll):
 
 
 class SideBySideDiff(Horizontal):
-    """Two scroll-synced panes: original ("before") and current ("after")."""
+    """Two scroll-synced panes: original ("before") and current ("after").
+
+    `source` records which diff is currently displayed ("staged" or
+    "unstaged") — it decides which direction the hunk checkbox toggles.
+    """
 
     current_hunk_index: reactive[int] = reactive(0)
     file_diff: reactive[FileDiff | None] = reactive(None)
@@ -121,19 +134,21 @@ class SideBySideDiff(Horizontal):
         self.before_pane.on_scrolled = self._on_pane_scrolled
         self.after_pane.on_scrolled = self._on_pane_scrolled
         self._syncing = False
+        self.source = "unstaged"
 
     def compose(self):
         yield self.before_pane
         yield self.after_pane
 
-    def show_file(self, file_diff: FileDiff | None) -> None:
+    def show_file(self, file_diff: FileDiff | None, source: str = "unstaged") -> None:
         self.file_diff = file_diff
+        self.source = source
         self.current_hunk_index = 0
         self._refresh_panes()
 
     def _refresh_panes(self) -> None:
-        self.before_pane.update_content(self.file_diff, self.current_hunk_index)
-        self.after_pane.update_content(self.file_diff, self.current_hunk_index)
+        self.before_pane.update_content(self.file_diff, self.current_hunk_index, self.source)
+        self.after_pane.update_content(self.file_diff, self.current_hunk_index, self.source)
 
     @property
     def current_hunk(self) -> Hunk | None:

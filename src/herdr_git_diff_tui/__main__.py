@@ -2,6 +2,12 @@
 
 Root Textual application wiring the file list + side-by-side diff panel + a
 staging/unstaging workflow. See SPEC.md section 4 for the MVP scope.
+
+Staging UX (VS Code Source Control-style, see SPEC.md section 4.2): the left
+column always shows both "Staged Changes" and "Changes" sections at once —
+staging/unstaging a file moves it between the two live, rather than the whole
+view flipping between two modes. Hunks are staged/unstaged individually via a
+checkbox next to the hunk header in the diff panel (space bar).
 """
 
 from __future__ import annotations
@@ -12,11 +18,11 @@ from pathlib import Path
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
-from textual.widgets import Footer, Header
+from textual.widgets import Footer, Header, ListView
 
 from . import git
-from .diff_parser import parse_unified_diff
-from .ui.file_list import FileListPanel
+from .diff_parser import FileDiff, parse_unified_diff
+from .ui.file_list import ChangesPanel
 from .ui.side_by_side import SideBySideDiff
 
 
@@ -28,9 +34,21 @@ class GitDiffApp(App):
     Horizontal#root {
         height: 1fr;
     }
-    FileListPanel {
-        width: 2fr;
+    ChangesPanel {
+        width: 3fr;
         border-right: solid $panel;
+    }
+    Section {
+        height: auto;
+    }
+    Section ListView {
+        height: auto;
+        max-height: 14;
+    }
+    .section-header {
+        color: $text-muted;
+        text-style: bold;
+        padding: 1 1 0 1;
     }
     SideBySideDiff {
         width: 10fr;
@@ -46,96 +64,132 @@ class GitDiffApp(App):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
-        ("t", "toggle_staged", "Toggle staged/unstaged"),
         ("s", "stage", "Stage"),
         ("u", "unstage", "Unstage"),
+        ("space", "toggle_hunk", "Stage/unstage hunk"),
     ]
-    # Tab / Shift+Tab switch focus between the file list and diff panel via
-    # Textual's built-in focus_next/focus_previous (Screen-level bindings).
+    # Tab / Shift+Tab switch focus between the two file-list sections and the
+    # diff panel via Textual's built-in focus_next/focus_previous.
 
     def __init__(self, cwd: str | None = None) -> None:
         super().__init__()
         self.cwd = cwd or str(Path.cwd())
-        self.staged = False
+        # Which section last had a highlighted item — the source of truth for
+        # "what am I looking at", independent of whatever currently has
+        # keyboard focus (so it still holds once focus moves into the diff
+        # panel, and doesn't go stale mid-refresh; see _active_selection).
+        self._active_section = "unstaged"
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal(id="root"):
-            yield FileListPanel(id="file-list")
+            yield ChangesPanel(id="changes")
             yield SideBySideDiff(id="diff-view")
         yield Footer()
 
     def on_mount(self) -> None:
         self.action_refresh()
-        self.query_one("#file-list", FileListPanel).focus()
+        panel = self.query_one(ChangesPanel)
+        if panel.unstaged_section.selected_file_diff is not None:
+            self._active_section = "unstaged"
+            panel.unstaged_section.list_view.focus()
+        else:
+            self._active_section = "staged"
+            panel.staged_section.list_view.focus()
+        self._sync_diff_view()
 
     def action_refresh(self) -> None:
         try:
-            raw = git.diff_unified(self.staged, cwd=self.cwd)
+            staged_raw = git.diff_unified(True, cwd=self.cwd)
+            unstaged_raw = git.diff_unified(False, cwd=self.cwd)
         except subprocess.CalledProcessError as exc:
             self.notify(f"git diff failed: {exc.stderr}", severity="error")
             return
-        files = parse_unified_diff(raw)
-        file_list = self.query_one("#file-list", FileListPanel)
-        file_list.set_files(files)
+        staged_files = parse_unified_diff(staged_raw)
+        unstaged_files = parse_unified_diff(unstaged_raw)
+        panel = self.query_one(ChangesPanel)
+        panel.set_files(staged_files, unstaged_files)
         self._sync_diff_view()
-        source = "staged" if self.staged else "working tree"
-        self.sub_title = f"{source} — {len(files)} file(s) changed"
+        self.sub_title = f"{len(staged_files)} staged, {len(unstaged_files)} changed"
 
-    def action_toggle_staged(self) -> None:
-        self.staged = not self.staged
-        self.action_refresh()
+    def _active_selection(self) -> tuple[FileDiff | None, str]:
+        """The file currently "in view", and whether it's the staged or
+        unstaged side — driven by `self._active_section`, not by whatever
+        currently has keyboard focus (focus moves into the diff panel, which
+        isn't itself a section; and this must stay correct through a
+        post-action refresh, before any new Highlighted event has fired).
+        """
+        panel = self.query_one(ChangesPanel)
+        section = (
+            panel.staged_section if self._active_section == "staged" else panel.unstaged_section
+        )
+        file_diff = section.selected_file_diff
+        if file_diff is not None:
+            return file_diff, self._active_section
+        # The active section is now empty (e.g. its last file just got fully
+        # staged/unstaged) — fall back to whichever section still has one.
+        other = panel.unstaged_section if self._active_section == "staged" else panel.staged_section
+        other_source = "unstaged" if self._active_section == "staged" else "staged"
+        return other.selected_file_diff, other_source
 
     def action_stage(self) -> None:
-        self._stage_or_unstage(staging=True)
-
-    def action_unstage(self) -> None:
-        self._stage_or_unstage(staging=False)
-
-    def _stage_or_unstage(self, staging: bool) -> None:
-        file_list = self.query_one("#file-list", FileListPanel)
-        diff_view = self.query_one("#diff-view", SideBySideDiff)
-        file_diff = file_list.selected_file_diff
+        file_diff, source = self._active_selection()
         if file_diff is None:
             return
+        if source == "staged":
+            self.notify("Already staged", severity="warning")
+            return
+        self._run_git(lambda: git.stage_file(file_diff.path, cwd=self.cwd))
 
-        diff_focused = self.focused in (diff_view.before_pane, diff_view.after_pane)
+    def action_unstage(self) -> None:
+        file_diff, source = self._active_selection()
+        if file_diff is None:
+            return
+        if source == "unstaged":
+            self.notify("Not staged yet", severity="warning")
+            return
+        self._run_git(lambda: git.unstage_file(file_diff.path, cwd=self.cwd))
+
+    def action_toggle_hunk(self) -> None:
+        diff_view = self.query_one(SideBySideDiff)
+        if self.focused is not diff_view.before_pane or diff_view.current_hunk is None:
+            return
+        file_diff, source = self._active_selection()
+        if file_diff is None:
+            return
+        patch = diff_view.current_hunk.as_patch(file_diff)
+        if source == "unstaged":
+            self._run_git(lambda: git.apply_patch(patch, cached=True, cwd=self.cwd))
+        else:
+            self._run_git(
+                lambda: git.apply_patch(patch, cached=True, reverse=True, cwd=self.cwd)
+            )
+
+    def _run_git(self, action) -> None:
         try:
-            if diff_focused and diff_view.current_hunk is not None:
-                patch = diff_view.current_hunk.as_patch(file_diff)
-                if staging:
-                    if self.staged:
-                        self.notify("Already viewing staged changes", severity="warning")
-                        return
-                    git.apply_patch(patch, cached=True, cwd=self.cwd)
-                else:
-                    if not self.staged:
-                        self.notify("Nothing to unstage in working-tree view", severity="warning")
-                        return
-                    git.apply_patch(patch, cached=True, reverse=True, cwd=self.cwd)
-            else:
-                if staging:
-                    git.stage_file(file_diff.path, cwd=self.cwd)
-                else:
-                    git.unstage_file(file_diff.path, cwd=self.cwd)
+            action()
         except subprocess.CalledProcessError as exc:
             self.notify(f"git failed: {exc.stderr}", severity="error")
             return
-
         self.action_refresh()
 
-    @on(FileListPanel.Highlighted)
-    def _on_file_highlighted(self) -> None:
+    @on(ListView.Highlighted)
+    def _on_file_highlighted(self, event: ListView.Highlighted) -> None:
+        panel = self.query_one(ChangesPanel)
+        if event.list_view is panel.staged_section.list_view:
+            self._active_section = "staged"
+        elif event.list_view is panel.unstaged_section.list_view:
+            self._active_section = "unstaged"
         self._sync_diff_view()
 
     def _sync_diff_view(self) -> None:
-        file_list = self.query_one("#file-list", FileListPanel)
-        diff_view = self.query_one("#diff-view", SideBySideDiff)
-        diff_view.show_file(file_list.selected_file_diff)
+        file_diff, source = self._active_selection()
+        diff_view = self.query_one(SideBySideDiff)
+        diff_view.show_file(file_diff, source)
 
     def on_key(self, event) -> None:
-        diff_view = self.query_one("#diff-view", SideBySideDiff)
-        if self.focused in (diff_view.before_pane, diff_view.after_pane):
+        diff_view = self.query_one(SideBySideDiff)
+        if self.focused is diff_view.before_pane:
             if event.key == "down":
                 diff_view.next_hunk()
                 event.stop()
