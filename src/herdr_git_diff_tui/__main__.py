@@ -10,12 +10,15 @@ view flipping between two modes.
 
 `s`/`u` are contextual rather than being split across separate keys: with
 focus in a file list they stage/unstage the whole selected file; with focus
-in the diff panel they stage/unstage exactly the checked lines of the
-current hunk (checkboxes toggled with `space`, cursor moved with `↑`/`↓`) if
-any are checked, or the whole hunk otherwise. The diff panel's own status
-line always names which action is live, so the active file/hunk and its
-available action stay visible regardless of which widget currently has
-keyboard focus.
+in the diff panel they stage/unstage exactly the checked lines (checkboxes
+toggled with `space`) if any are checked, or just the current change block
+under the cursor otherwise — never the rest of the hunk, which may hold
+other, unrelated blocks the cursor isn't pointing at (see
+`SideBySideDiff.staging_indices`). The cursor itself moves with `↑`/`↓`
+across every hunk's blocks as one continuous sequence — there's no separate
+hunk-jump key. The diff panel's own status line always names which action
+is live, so the active file/block and its available action stay visible
+regardless of which widget currently has keyboard focus.
 
 After any stage/unstage, selection lands on whatever file is now at the same
 position in the merged (Staged Changes, then Changes) list — i.e. "the file
@@ -91,9 +94,16 @@ class GitDiffApp(App):
     }
     DiffPane {
         width: 1fr;
+        border: solid $panel;
     }
-    DiffPane#before {
-        border-right: solid $panel;
+    /* Which side (old/new) `←`/`→` currently points at — see
+       `SideBySideDiff._update_side_highlight`. Only shown while the diff
+       panel actually has focus: the block/side cursor itself persists
+       even after Tab moves focus away (so it's still there when you tab
+       back), but the highlight shouldn't linger on screen the whole time
+       as if the panel were still being steered. */
+    DiffPane.-active-side {
+        border: heavy $accent;
     }
     """
 
@@ -102,8 +112,6 @@ class GitDiffApp(App):
         ("r", "refresh", "Refresh"),
         ("s", "stage", "Stage"),
         ("u", "unstage", "Unstage"),
-        ("]", "next_hunk", "Next hunk"),
-        ("[", "prev_hunk", "Prev hunk"),
         ("space", "toggle_line", "Select line"),
     ]
     # Tab / Shift+Tab switch focus between the two file-list sections and the
@@ -111,9 +119,10 @@ class GitDiffApp(App):
     # file lists, ↑/↓ also flow across the Staged/Changes boundary directly
     # (see `on_key`), so you never need Tab just to reach the other section.
     # Tab is how you get into the diff panel; once there, ↑/↓ step the
-    # line-selection cursor instead (see `DiffPane` in ui/side_by_side.py),
-    # `]`/`[` jump hunk-to-hunk, and PgUp/PgDn/Home/End/mouse wheel still do
-    # plain free scrolling.
+    # block cursor across *every* hunk's changes as one continuous sequence
+    # (see `DiffPane`/`SideBySideDiff` in ui/side_by_side.py) — there's no
+    # separate hunk-jump key — `←`/`→` pick the block's old/new side, and
+    # PgUp/PgDn/Home/End/mouse wheel still do plain free scrolling.
 
     def __init__(self, cwd: str | None = None) -> None:
         super().__init__()
@@ -271,12 +280,6 @@ class GitDiffApp(App):
             return
         await self._run_git(lambda: git.unstage_file(file_diff.path, cwd=self.cwd))
 
-    def action_next_hunk(self) -> None:
-        self.query_one(SideBySideDiff).next_hunk()
-
-    def action_prev_hunk(self) -> None:
-        self.query_one(SideBySideDiff).prev_hunk()
-
     def action_toggle_line(self) -> None:
         self.query_one(SideBySideDiff).toggle_current_line()
 
@@ -297,9 +300,11 @@ class GitDiffApp(App):
         if not stage and source == "unstaged":
             self.notify("Not staged yet", severity="warning")
             return
-        # Empty selection -> the whole hunk (`as_patch`'s `None` sentinel);
-        # a non-empty one -> just those lines (line-level staging).
-        selected = diff_view.selected_lines.get(diff_view.current_hunk_index) or None
+        # Checked lines if any are checked; otherwise just the current
+        # change block under the cursor (both its sides) — never the rest
+        # of the hunk, which may hold other, unrelated blocks the cursor
+        # isn't pointing at (see `SideBySideDiff.staging_indices`).
+        selected = diff_view.staging_indices()
         patch = hunk.as_patch(file_diff, selected_indices=selected)
         await self._run_git(
             lambda: git.apply_patch(patch, cached=True, reverse=not stage, cwd=self.cwd)
