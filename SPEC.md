@@ -1,7 +1,7 @@
 ---
 title: herdr Git Diff TUI — Specification
-status: draft
-date: 2026-08-21
+status: MVP implemented (see section 8) — not yet wired up as a herdr plugin
+date: 2026-08-24
 ---
 
 # herdr Git Diff TUI
@@ -62,51 +62,65 @@ cross-platform support is best-effort, not a release blocker for v0.1.
 
 ## 4. MVP functional scope
 
+As implemented, this diverged in a few deliberate ways from the original draft below
+(both diff sources always visible instead of a toggle; line-level staging turned out
+necessary and shipped after all) — the differences and why are called out inline.
+
 ### 4.1 Viewing
 
-**Screen layout (12-column grid):**
+**Screen layout:** a narrower left column listing changed files, and on the right two
+equal-width columns showing the original ("before") and current ("after") version of the
+selected file, scrolled in sync, with per-line highlighting of added/removed lines — a
+side-by-side diff, not unified (like the split view in most IDEs). A unified diff (single
+column with +/-) as an alternative display mode is not implemented, but the layout
+doesn't preclude adding it later behind a toggle.
 
-| Zone                      | Width (of 12) | Content                                    |
-|---------------------------|---------------|---------------------------------------------|
-| Changed files list        | 2             | path, status (M/A/D/R), +/- line counts    |
-| "Before"                  | 5             | file content prior to the change (side A)  |
-| "After"                   | 5             | file content after the change (side B)     |
-
-I.e. the primary viewing mode is a **side-by-side diff**, not unified: a narrow navigation
-column on the left (2/12) listing files, and on the right two equal-width columns (5/12 +
-5/12) showing the original and current version of the selected file, scrolled in sync,
-with per-line highlighting of added/removed/changed lines (like the split view in most
-IDEs). A unified diff (single column with +/-) as an alternative display mode is not part
-of the MVP, but the layout should not preclude adding it later behind a toggle.
-
-- Diff sources:
-  - working tree vs index (`git diff`) — unstaged changes;
-  - index vs HEAD (`git diff --staged`) — staged changes;
-  - an arbitrary commit/range — **out of scope for MVP**, a future extension.
-- Diff panel for the selected file: side-by-side "before/after" with +/- line highlighting
-  and syntax highlighting in both columns.
-- Navigation:
-  - file list ↑/↓, Enter/click — select a file;
-  - synchronized scrolling of both diff columns (arrows/PgUp/PgDn/mouse) — both sides move
-    together so corresponding lines stay aligned;
-  - switching focus between the file list and the diff area (Tab).
-- Toggling the diff source: a key to switch between working ⇄ staged.
-- Manual refresh via a hotkey (`r`) — no auto-watch in the MVP (auto-refresh is a future
-  extension).
+- Diff sources — **both shown at once**, not toggled: the left column always has two
+  live sections, "Staged Changes" (index vs `HEAD`) and "Changes" (working tree vs
+  index), VS Code Source Control-style. Staging/unstaging a file is visible as it moving
+  between the two sections, rather than the whole view flipping between two modes — this
+  is a deliberate change from the toggle originally sketched above, made once staging
+  from either side turned out to be common enough that switching context to see it wasn't
+  worth the visibility. An arbitrary commit/range as a diff source is still out of scope.
+- Diff panel for the selected file: side-by-side "before/after" with +/- line
+  highlighting and syntax highlighting (via `pygments`) in both columns. Rather than a
+  full-file diff3-style alignment, each hunk (with git's default surrounding context) is
+  rendered as its own block, separated by a "⋯" marker — see `ui/side_by_side.py`.
+- Navigation — three separate, non-overlapping ways to move, so no single key pair is
+  overloaded with several meanings:
+  - file lists: `↑`/`↓` move the selection and flow across the Staged/Changes boundary
+    directly (reaching the other section never needs `Tab`); `Tab`/`Shift+Tab` moves
+    focus between the two sections and into the diff panel.
+  - diff panel (`Tab` to focus it — only the "before" side is a tab stop, since both
+    sides scroll/highlight in lockstep): `↑`/`↓` step a line-selection cursor over the
+    current hunk's changed lines (checkbox gutter, see 4.2), with the view
+    auto-scrolling to keep the cursor visible; `]`/`[` jump to the next/previous hunk;
+    `PgUp`/`PgDn`/`Home`/`End`/mouse wheel do plain, free scrolling of both sides in sync.
+  - a status line above the diff panel always names the active file, hunk position, and
+    live `s`/`u` action, independent of keyboard focus — so "what am I looking at, and
+    what would `s` do" never depends on remembering where focus is.
+- Manual refresh via a hotkey (`r`) — no auto-watch (auto-refresh is a future extension).
+  Refresh preserves the selection by position in the merged (Staged, then Changes) list,
+  so staging/unstaging a file lands you on whatever slid up to fill the gap rather than
+  resetting to the top of a section.
 
 ### 4.2 Staging / unstaging
 - Stage/unstage an entire file (`s` — stage, `u` — unstage) from the file list.
-- Stage/unstage an individual hunk while positioned in the diff panel with the cursor on
-  that hunk (`s`/`u` in the context of the selected hunk → `git apply --cached` of the
-  corresponding patch).
-- Line-level (partial hunk) staging — **out of scope for MVP** (patch parsing/reassembly
-  complexity is high; do this after hunk-level staging is proven out).
+- Stage/unstage a hunk from the diff panel: `s`/`u` there stage/unstage the current
+  hunk as a whole, via `git apply --cached` (optionally `--reverse`) of the hunk
+  rendered back into a standalone patch (`Hunk.as_patch`).
+- **Line-level (partial-hunk) staging is implemented**, not out of scope as originally
+  planned: each added/removed line gets a checkbox (`space` to toggle) in the diff
+  panel's gutter; `s`/`u` there stage/unstage exactly the checked lines if any are
+  checked, falling back to the whole hunk otherwise. The patch is built with the classic
+  `git add -p` trick (see `Hunk.as_patch`'s `selected_indices` param): an unselected
+  added line is dropped from the patch entirely, an unselected removed line is turned
+  into context — only the two `@@` counts change, not the hunk's position.
 - No destructive operations (discard/checkout --) in the MVP — stage/unstage only.
 
 ### 4.3 Explicitly out of scope for MVP
 - Merge conflicts and resolving them.
 - History/log browsing of past commits.
-- Line-level partial-hunk staging.
 - Auto-refresh on file changes (a file watcher).
 - Configuration (colors/keybindings) — reasonable defaults are hardcoded.
 
@@ -126,7 +140,7 @@ of the MVP, but the layout should not preclude adding it later behind a toggle.
   operations) is handled locally by the plugin via `subprocess`. The socket API is left for
   the future (e.g. to hit `pane.read`/notify other agents about staged changes).
 
-## 6. Plugin architecture (draft)
+## 6. Plugin architecture
 
 ```
 herdr-git-diff-tui/
@@ -136,15 +150,20 @@ herdr-git-diff-tui/
 ├── src/
 │   └── herdr_git_diff_tui/
 │       ├── __init__.py
-│       ├── __main__.py        # entry point (textual App)
-│       ├── git.py             # wrapper over the git CLI: status, diff, apply --cached
-│       ├── diff_parser.py     # unified diff parsing → structures (files, hunks, lines)
+│       ├── __main__.py        # entry point + root Textual App: wires the file
+│       │                      #   list, diff panel, and the staging workflow
+│       ├── git.py             # wrapper over the git CLI: diff, show, add/restore,
+│       │                      #   apply --cached (incl. reversed, for unstaging)
+│       ├── diff_parser.py     # unified diff parsing -> FileDiff/Hunk/DiffLine, and
+│       │                      #   Hunk.as_patch() (whole-hunk or line-level partial)
+│       ├── content.py         # resolves before/after full file content for a FileDiff
 │       └── ui/
-│           ├── file_list.py       # left column (2/12), changed files list
-│           └── side_by_side.py    # right columns (5/12 + 5/12), "before"/"after"
-├── requirements.txt           # textual, (optionally) pygments
+│           ├── file_list.py       # left column: "Staged Changes" + "Changes" sections
+│           └── side_by_side.py    # right columns: "before"/"after", hunk/line cursor,
+│                                   #   checkboxes, scroll sync
+├── requirements.txt           # textual, pygments
 ├── tests/
-│   └── ...
+│   └── test_diff_parser.py
 └── SPEC.md                    # this file
 ```
 
@@ -162,11 +181,18 @@ herdr-git-diff-tui/
 ## 8. MVP Definition of Done
 
 - [ ] The plugin installs and opens via a hotkey in a real herdr session on the user's machine.
-- [ ] Shows the list of changed files for working tree and staged, separately.
-- [ ] Shows the selected file's diff with +/- and syntax highlighting.
-- [ ] Stages/unstages an entire file.
-- [ ] Stages/unstages an individual hunk.
-- [ ] Manual refresh works and doesn't unnecessarily lose the current selection/scroll
-      position.
+      Not yet done — herdr integration (section 5) hasn't been wired up; run directly via
+      `python -m herdr_git_diff_tui` or `bin/bootstrap.py` for now (see README.md).
+- [x] Shows the list of changed files for working tree and staged, separately (both
+      sections always visible, VS Code Source Control-style — see 4.1).
+- [x] Shows the selected file's diff with +/- and syntax highlighting.
+- [x] Stages/unstages an entire file.
+- [x] Stages/unstages an individual hunk.
+- [x] Stages/unstages individual lines within a hunk — went beyond the original MVP
+      scope (4.2 originally called this out of scope); turned out to be needed once
+      hunk-level staging was in daily use.
+- [x] Manual refresh works and doesn't unnecessarily lose the current selection/scroll
+      position (preserved by position in the merged Staged+Changes list, see 4.1).
 - [ ] Works against the user's own repository (dogfooding) for at least one working day
-      without crashing.
+      without crashing — in progress; several rounds of real-usage feedback already
+      folded back into the navigation/staging/highlighting model above.

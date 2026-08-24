@@ -33,17 +33,48 @@ class Hunk:
     new_lines: int
     lines: list[DiffLine] = field(default_factory=list)
 
-    def as_patch(self, file_diff: "FileDiff") -> str:
-        """Render this single hunk back into a standalone `git apply`-able patch."""
+    def as_patch(self, file_diff: "FileDiff", selected_indices: set[int] | None = None) -> str:
+        """Render this hunk back into a standalone `git apply`-able patch.
+
+        `selected_indices` (indices into `self.lines`) picks out individual
+        added/removed lines to include, for line-level (partial-hunk)
+        staging — `None` means "the whole hunk", as before. This is the
+        standard trick behind e.g. `git add -p`'s manual line selection: an
+        unselected "add" line is simply dropped (it was never added), while
+        an unselected "remove" line is turned into context (it isn't being
+        removed after all, so the base still has it). Only the two `@@`
+        counts change; `old_start`/`new_start` (the position) don't.
+        """
+        out_lines: list[str] = []
+        old_count = 0
+        new_count = 0
+        for i, line in enumerate(self.lines):
+            if line.kind == "context":
+                out_lines.append(f" {line.text}")
+                old_count += 1
+                new_count += 1
+            elif line.kind == "add":
+                if selected_indices is None or i in selected_indices:
+                    out_lines.append(f"+{line.text}")
+                    new_count += 1
+                # else: omit — this addition isn't part of the selection.
+            elif line.kind == "remove":
+                if selected_indices is None or i in selected_indices:
+                    out_lines.append(f"-{line.text}")
+                    old_count += 1
+                else:
+                    # Not selected for removal -> the base still has it.
+                    out_lines.append(f" {line.text}")
+                    old_count += 1
+                    new_count += 1
+        header = f"@@ -{self.old_start},{old_count} +{self.new_start},{new_count} @@"
         lines = [
             f"diff --git a/{file_diff.old_path} b/{file_diff.new_path}",
             f"--- a/{file_diff.old_path}",
             f"+++ b/{file_diff.new_path}",
-            self.header,
+            header,
+            *out_lines,
         ]
-        for line in self.lines:
-            prefix = {"context": " ", "add": "+", "remove": "-"}[line.kind]
-            lines.append(f"{prefix}{line.text}")
         return "\n".join(lines) + "\n"
 
 
