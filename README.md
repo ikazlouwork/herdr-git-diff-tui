@@ -52,11 +52,11 @@ python bin/bootstrap.py
 
 | Key            | Action                                                             |
 |----------------|---------------------------------------------------------------------|
-| `↑`/`↓`        | Move the line-selection cursor over the current hunk's changed lines |
+| `↑`/`↓`        | Move the cursor to the next/previous changed block, across every hunk in the file — no separate hunk-jump key |
+| `←`/`→`        | Point the cursor at the block's old ("before")/new ("after") side (highlighted border, shown while the panel has focus); if the current block has no such side (e.g. `←` on a pure addition), jumps to the nearest block that does |
 | `PgUp`/`PgDn`/`Home`/`End`/mouse wheel | Free scroll (both sides stay in sync)         |
-| `]` / `[`      | Jump to the next / previous hunk                                    |
-| `space`        | Check/uncheck the line under the cursor for line-level staging      |
-| `s` / `u`      | Stage / unstage the checked lines (or the whole hunk, if none checked) |
+| `space`        | Check/uncheck the side under the cursor (all its lines, as one unit) for line-level staging |
+| `s` / `u`      | Stage / unstage the checked lines (or just the current block, if none checked) |
 
 **Global:** `r` refresh, `q` quit.
 

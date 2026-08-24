@@ -92,9 +92,11 @@ doesn't preclude adding it later behind a toggle.
     directly (reaching the other section never needs `Tab`); `Tab`/`Shift+Tab` moves
     focus between the two sections and into the diff panel.
   - diff panel (`Tab` to focus it — only the "before" side is a tab stop, since both
-    sides scroll/highlight in lockstep): `↑`/`↓` step a line-selection cursor over the
-    current hunk's changed lines (checkbox gutter, see 4.2), with the view
-    auto-scrolling to keep the cursor visible; `]`/`[` jump to the next/previous hunk;
+    sides scroll/highlight in lockstep): changed lines are grouped into "change blocks"
+    (checkbox gutter, see 4.2); `↑`/`↓` step a cursor block-to-block across *every* hunk
+    in the file as one continuous sequence — no separate hunk-jump key — with the view
+    auto-scrolling to keep the cursor visible; `←`/`→` pick the block's old/new side
+    (highlighted border, shown only while the panel has focus);
     `PgUp`/`PgDn`/`Home`/`End`/mouse wheel do plain, free scrolling of both sides in sync.
   - a status line above the diff panel always names the active file, hunk position, and
     live `s`/`u` action, independent of keyboard focus — so "what am I looking at, and

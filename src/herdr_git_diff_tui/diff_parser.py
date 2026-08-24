@@ -22,6 +22,10 @@ class DiffLine:
     text: str
     old_lineno: int | None
     new_lineno: int | None
+    # Set when this line is immediately followed by git's "\ No newline at
+    # end of file" marker in the source diff — i.e. this line, as it appears
+    # in the version(s) it belongs to, is the true last line of that file.
+    no_newline: bool = False
 
 
 @dataclass
@@ -34,7 +38,7 @@ class Hunk:
     lines: list[DiffLine] = field(default_factory=list)
 
     def as_patch(self, file_diff: "FileDiff", selected_indices: set[int] | None = None) -> str:
-        """Render this hunk back into a standalone `git apply`-able patch.
+        r"""Render this hunk back into a standalone `git apply`-able patch.
 
         `selected_indices` (indices into `self.lines`) picks out individual
         added/removed lines to include, for line-level (partial-hunk)
@@ -44,29 +48,74 @@ class Hunk:
         an unselected "remove" line is turned into context (it isn't being
         removed after all, so the base still has it). Only the two `@@`
         counts change; `old_start`/`new_start` (the position) don't.
+
+        `DiffLine.no_newline` (set by the parser from a "\ No newline at end
+        of file" marker) needs care when reconstructing a partial hunk: a
+        "-" line's marker describes the *old* blob only, and a "+" line's
+        marker the *new* blob only, so either can be re-emitted whenever
+        that line itself makes it into the output — nothing of that same
+        side can follow it, since git only ever flags a line that's truly
+        the last one of its side. A context line's marker describes *both*
+        blobs at once, though, so it's only valid to re-emit if nothing at
+        all still follows in the output — which is also where an unselected
+        "remove" (now emitted as context) needs the same "nothing follows"
+        check: dropping a later selected "add" line would otherwise leave a
+        no-longer-terminal line incorrectly marked as newline-less.
         """
         out_lines: list[str] = []
         old_count = 0
         new_count = 0
+
+        def _is_output(idx: int, l: "DiffLine") -> bool:
+            return l.kind != "add" or selected_indices is None or idx in selected_indices
+
+        def _nothing_follows(i: int) -> bool:
+            return not any(_is_output(j, l) for j, l in enumerate(self.lines) if j > i)
+
         for i, line in enumerate(self.lines):
             if line.kind == "context":
                 out_lines.append(f" {line.text}")
                 old_count += 1
                 new_count += 1
+                if line.no_newline and _nothing_follows(i):
+                    out_lines.append("\\ No newline at end of file")
             elif line.kind == "add":
                 if selected_indices is None or i in selected_indices:
                     out_lines.append(f"+{line.text}")
                     new_count += 1
+                    if line.no_newline:
+                        out_lines.append("\\ No newline at end of file")
                 # else: omit — this addition isn't part of the selection.
             elif line.kind == "remove":
                 if selected_indices is None or i in selected_indices:
                     out_lines.append(f"-{line.text}")
                     old_count += 1
+                    if line.no_newline:
+                        out_lines.append("\\ No newline at end of file")
+                elif line.no_newline and not _nothing_follows(i):
+                    # Not selected for removal, so the base still has this
+                    # text — but the base's copy has no trailing newline,
+                    # and a later selected "add" line still follows it in
+                    # the output. A plain context line can't express that
+                    # newline-status change (context means identical bytes
+                    # on both sides), so fall back to an identical
+                    # remove+add pair: same text, but the "+" copy is no
+                    # longer flagged newline-less since content now follows
+                    # it.
+                    out_lines.append(f"-{line.text}")
+                    out_lines.append("\\ No newline at end of file")
+                    out_lines.append(f"+{line.text}")
+                    old_count += 1
+                    new_count += 1
                 else:
                     # Not selected for removal -> the base still has it.
                     out_lines.append(f" {line.text}")
                     old_count += 1
                     new_count += 1
+                    if line.no_newline:
+                        out_lines.append("\\ No newline at end of file")
+                    if line.no_newline and _nothing_follows(i):
+                        out_lines.append("\\ No newline at end of file")
         header = f"@@ -{self.old_start},{old_count} +{self.new_start},{new_count} @@"
         lines = [
             f"diff --git a/{file_diff.old_path} b/{file_diff.new_path}",
@@ -160,7 +209,12 @@ def parse_unified_diff(text: str) -> list[FileDiff]:
             )
             old_lineno += 1
         elif line.startswith("\\"):
-            # "\ No newline at end of file" — ignore.
+            # "\ No newline at end of file" — refers to the line just
+            # emitted above, not a line of its own; record it there so
+            # `Hunk.as_patch` can re-emit it when reconstructing a
+            # (possibly partial) patch. See as_patch's docstring.
+            if current_hunk.lines:
+                current_hunk.lines[-1].no_newline = True
             continue
         else:
             current_hunk.lines.append(
