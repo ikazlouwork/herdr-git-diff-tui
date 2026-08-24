@@ -58,12 +58,18 @@ class Section(Vertical):
         yield self.header
         yield self.list_view
 
-    def set_files(self, files: list[FileDiff]) -> None:
-        """Replace the section's contents, preserving selection by path."""
+    async def set_files(self, files: list[FileDiff]) -> None:
+        """Replace the section's contents, preserving selection by path.
+
+        Awaits the underlying `clear`/`append` (both return an awaitable that
+        only resolves once the DOM is actually updated) — callers that need
+        an accurate `len(list_view.children)` right after this returns (see
+        `GitDiffApp._select_merged_index`) depend on that.
+        """
         previous_path = self.selected_file_diff.path if self.selected_file_diff else None
-        self.list_view.clear()
+        await self.list_view.clear()
         for file_diff in files:
-            self.list_view.append(FileListItem(file_diff))
+            await self.list_view.append(FileListItem(file_diff))
         self.header.update(self._header_text(len(files)))
         if not files:
             return
@@ -93,6 +99,6 @@ class ChangesPanel(Vertical):
         yield self.staged_section
         yield self.unstaged_section
 
-    def set_files(self, staged: list[FileDiff], unstaged: list[FileDiff]) -> None:
-        self.staged_section.set_files(staged)
-        self.unstaged_section.set_files(unstaged)
+    async def set_files(self, staged: list[FileDiff], unstaged: list[FileDiff]) -> None:
+        await self.staged_section.set_files(staged)
+        await self.unstaged_section.set_files(unstaged)

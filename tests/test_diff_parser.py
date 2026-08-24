@@ -81,3 +81,28 @@ def test_hunk_as_patch_roundtrips_applyable_patch():
     assert "@@ -1,3 +1,4 @@" in patch
     assert "+line2 modified" in patch
     assert "-line2" in patch
+
+
+def test_hunk_as_patch_partial_selection_drops_unselected_add():
+    # kinds: 0 context, 1 remove, 2 add ("line2 modified"), 3 add ("line2.5
+    # added"), 4 context. Select only the unselected-remove's *other* add
+    # line (index 3) -- the unselected add (index 2) must be omitted
+    # entirely, and the unselected remove must become context (line2 stays).
+    files = parse_unified_diff(SIMPLE_DIFF)
+    hunk = files[0].hunks[0]
+    patch = hunk.as_patch(files[0], selected_indices={3})
+    lines = patch.splitlines()
+    assert "@@ -1,3 +1,4 @@" in patch
+    assert " line2" in lines  # unselected remove -> kept as context
+    assert "-line2" not in patch
+    assert "+line2.5 added" in patch
+    assert "+line2 modified" not in patch
+
+
+def test_hunk_as_patch_partial_selection_keeps_selected_remove():
+    files = parse_unified_diff(SIMPLE_DIFF)
+    hunk = files[0].hunks[0]
+    patch = hunk.as_patch(files[0], selected_indices={1})
+    assert "-line2" in patch
+    assert "+line2 modified" not in patch
+    assert "+line2.5 added" not in patch
